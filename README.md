@@ -23,13 +23,13 @@ enso-forecasting/
 │   └── figures/                # Generated plots and visualizations
 │       ├── lstm_results.png
 │       ├── multivariate_lstm_results.png
-│       ├── validation_2012_results.png
+│       ├── validation_2024_results.png
 │       └── sst_anomaly_trend.png
 ├── download_data.py            # Download NetCDF from NOAA
 ├── preprocessing.py            # ETL: NetCDF → CSV
 ├── modeling.py                 # Univariate LSTM
 ├── multivariate_modeling.py    # Multivariate LSTM (SST + Niño 3.4)
-└── validation_2013.py          # Out-of-Sample Testing (Train: 2000-2012, Test: 2013)
+└── validation_2013.py          # Out-of-Sample Testing (Train: 2000-2023, Test: 2024)
 ```
 
 ---
@@ -63,8 +63,8 @@ Folder `data_sst/` berisi file NetCDF mentah dari NOAA (~500MB per file) yang **
 
 ## Results
 
-### Out-of-Sample Validation (Year 2013)
-![Validation Results](output/figures/validation_2013_results.png)
+### Out-of-Sample Validation (Year 2024)
+![Validation Results](output/figures/validation_2024_results.png)
 
 ### Multivariate Prediction
 ![Multivariate Results](output/figures/multivariate_lstm_results.png)
@@ -88,7 +88,7 @@ python download_data.py
 python preprocessing.py
 
 # 5. Train & evaluate
-python validation_2012.py          # Recommended: Out-of-sample validation
+python validation_2013.py          # Recommended: Out-of-sample validation
 python multivariate_modeling.py    # Alternative: 80/20 split
 ```
 

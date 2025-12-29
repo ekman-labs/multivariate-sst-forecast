@@ -3,8 +3,8 @@ import requests
 from tqdm import tqdm  # Import library progress bar
 
 # Konfigurasi
-START_YEAR = 2014
-END_YEAR = 2018
+START_YEAR = 2000
+END_YEAR = 2024
 OUTPUT_DIR = "data_sst"
 
 # Buat folder jika belum ada

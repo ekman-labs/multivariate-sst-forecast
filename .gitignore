@@ -4,6 +4,9 @@ data_sst_indo/
 *.nc
 *.pdf
 
+# Personal documentation (not for public)
+docs/personal/
+
 # Python
 __pycache__/
 *.py[cod]
