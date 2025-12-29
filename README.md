@@ -29,7 +29,7 @@ enso-forecasting/
 ├── preprocessing.py            # ETL: NetCDF → CSV
 ├── modeling.py                 # Univariate LSTM
 ├── multivariate_modeling.py    # Multivariate LSTM (SST + Niño 3.4)
-└── validation_2012.py          # Out-of-Sample Testing
+└── validation_2013.py          # Out-of-Sample Testing (Train: 2000-2012, Test: 2013)
 ```
 
 ---

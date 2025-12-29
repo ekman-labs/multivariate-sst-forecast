@@ -1,12 +1,9 @@
 """
-validation_2012.py - Out-of-Sample Testing for Year 2012
+validation_2013.py - Out-of-Sample Testing for Year 2013
 
-This script performs rigorous out-of-sample validation by:
-1. Training on data from 2000-2011
-2. Testing exclusively on 2012 data (12 months)
-
-This approach simulates a real-world forecasting scenario where the model
-must predict future values it has never seen during training.
+This script performs TRUE out-of-sample validation:
+1. Training on processed data from 2000-2012 (sst_indo_clean.csv)
+2. Testing on 2013 data loaded DIRECTLY from raw NetCDF (never seen during training)
 
 Author: Data Science Portfolio Project
 Date: December 2024
@@ -14,6 +11,7 @@ Date: December 2024
 
 import numpy as np
 import pandas as pd
+import xarray as xr
 import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
@@ -32,17 +30,18 @@ if torch.cuda.is_available():
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
-SST_INDO_FILE = "data/processed/sst_indo_clean.csv"
+SST_INDO_FILE = "data/processed/sst_indo_clean.csv"  # Training data (2000-2012)
 NINO34_FILE = "data/raw/nina34.anom.data.txt"
+SST_2013_NC = "data_sst/sst.day.mean.2013.nc"  # Raw 2013 data for testing
 
-LOOKBACK = 12  # 12 months lookback window
+# Indonesian Maritime Region (same as preprocessing.py)
+LAT_MIN, LAT_MAX = -11, 6
+LON_MIN, LON_MAX = 95, 141
 
-# Year-based split
-TRAIN_END_YEAR = 2011   # Train on 2000-2011
-TEST_YEAR = 2012        # Test on 2012
+LOOKBACK = 12
 
 # Model hyperparameters
-INPUT_SIZE = 2      # Indonesian SST + Niño 3.4
+INPUT_SIZE = 2
 HIDDEN_SIZE = 32
 NUM_LAYERS = 1
 OUTPUT_SIZE = 1
@@ -59,22 +58,17 @@ DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 # DATA LOADING
 # ============================================================================
 
-def load_indonesian_sst(filepath: str) -> pd.DataFrame:
-    """Load Indonesian SST anomaly data."""
-    df = pd.read_csv(filepath)
-    df['date'] = pd.to_datetime(df['date'])
-    df = df.set_index('date')
-    print(f"✓ Loaded Indonesian SST: {len(df)} records ({df.index[0].year}-{df.index[-1].year})")
-    return df
-
-
-def load_nino34_data(filepath: str) -> pd.DataFrame:
-    """Parse NOAA Niño 3.4 anomaly data."""
+def load_training_data(sst_file: str, nino_file: str) -> pd.DataFrame:
+    """Load training data (2000-2012) from processed CSV."""
+    # Load Indonesian SST
+    sst_df = pd.read_csv(sst_file)
+    sst_df['date'] = pd.to_datetime(sst_df['date'])
+    sst_df = sst_df.set_index('date')
+    
+    # Load Niño 3.4
     records = []
-    
-    with open(filepath, 'r') as f:
+    with open(nino_file, 'r') as f:
         lines = f.readlines()
-    
     for line in lines[1:]:
         parts = line.split()
         if len(parts) < 13:
@@ -85,7 +79,6 @@ def load_nino34_data(filepath: str) -> pd.DataFrame:
                 continue
         except ValueError:
             continue
-        
         for month_idx, value_str in enumerate(parts[1:13]):
             try:
                 value = float(value_str)
@@ -95,79 +88,92 @@ def load_nino34_data(filepath: str) -> pd.DataFrame:
                 records.append({'date': date, 'nino34': value})
             except ValueError:
                 continue
+    nino_df = pd.DataFrame(records).set_index('date').sort_index()
     
-    df = pd.DataFrame(records).set_index('date').sort_index()
-    print(f"✓ Loaded Niño 3.4: {len(df)} records ({df.index[0].year}-{df.index[-1].year})")
-    return df
-
-
-def merge_and_split_by_year(sst_df: pd.DataFrame, nino_df: pd.DataFrame, 
-                            train_end_year: int, test_year: int) -> tuple:
-    """
-    Merge datasets and split chronologically by year.
-    
-    Returns:
-        Tuple of (train_df, test_df)
-    """
+    # Merge
     merged = sst_df.join(nino_df, how='inner')[['sst_anomaly', 'nino34']].dropna()
     
-    # Split by year
-    train_df = merged[merged.index.year <= train_end_year]
-    test_df = merged[merged.index.year == test_year]
-    
-    print(f"\n✓ Data Split by Year:")
-    print(f"  Training: {train_df.index[0].strftime('%Y-%m')} to {train_df.index[-1].strftime('%Y-%m')} ({len(train_df)} records)")
-    print(f"  Test:     {test_df.index[0].strftime('%Y-%m')} to {test_df.index[-1].strftime('%Y-%m')} ({len(test_df)} records)")
-    
-    return train_df, test_df, merged
+    print(f"✓ Training data: {merged.index[0].strftime('%Y-%m')} to {merged.index[-1].strftime('%Y-%m')} ({len(merged)} records)")
+    return merged, nino_df
 
 
-# ============================================================================
-# PREPROCESSING
-# ============================================================================
-
-def create_sequences_for_validation(full_data: np.ndarray, train_size: int, 
-                                    test_size: int, lookback: int) -> tuple:
+def load_2013_from_netcdf(nc_file: str, nino_df: pd.DataFrame) -> pd.DataFrame:
     """
-    Create sequences ensuring test set uses lookback from training period.
-    
-    For Jan 2012 prediction, we need Dec 2010 - Nov 2011 (last 12 months of 2011).
+    Load 2013 SST data directly from raw NetCDF file.
+    This data was NEVER seen during training.
     """
-    X_train, y_train = [], []
-    X_test, y_test = [], []
+    # Load NetCDF
+    ds = xr.open_dataset(nc_file)
     
-    # Training sequences (within training data)
-    for i in range(lookback, train_size):
-        X_train.append(full_data[i-lookback:i, :])
-        y_train.append(full_data[i, 0])  # Only predict SST
+    # Slice to Indonesian region
+    ds_indo = ds.sel(
+        lat=slice(LAT_MIN, LAT_MAX),
+        lon=slice(LON_MIN, LON_MAX)
+    )
     
-    # Test sequences (using end of training + test data)
-    for i in range(train_size, train_size + test_size):
-        X_test.append(full_data[i-lookback:i, :])
-        y_test.append(full_data[i, 0])
+    # Resample to monthly
+    ds_monthly = ds_indo.resample(time='MS').mean(dim='time')
     
-    return (np.array(X_train), np.array(y_train).reshape(-1, 1),
-            np.array(X_test), np.array(y_test).reshape(-1, 1))
+    # Spatial mean
+    sst_mean = ds_monthly['sst'].mean(dim=['lat', 'lon'])
+    
+    # Calculate climatology from this year (or use simple mean)
+    # For proper anomaly, we'd need long-term climatology
+    # Here we use the mean of the training data as reference
+    
+    # Create DataFrame
+    df_2013 = pd.DataFrame({
+        'date': pd.to_datetime(sst_mean['time'].values),
+        'sst_actual': sst_mean.values
+    }).set_index('date')
+    
+    # We need to calculate anomaly using same climatology as training data
+    # For simplicity, we'll compute it directly
+    # Get Niño 3.4 for 2013
+    nino_2013 = nino_df.loc[nino_df.index.year == 2013]
+    
+    df_2013 = df_2013.join(nino_2013, how='inner')
+    
+    ds.close()
+    
+    print(f"✓ Test data (2013): {df_2013.index[0].strftime('%Y-%m')} to {df_2013.index[-1].strftime('%Y-%m')} ({len(df_2013)} records)")
+    
+    return df_2013
+
+
+def calculate_anomaly_for_2013(train_df: pd.DataFrame, test_2013: pd.DataFrame) -> pd.DataFrame:
+    """
+    Calculate 2013 anomaly using climatology from training data.
+    """
+    # Calculate monthly climatology from training data
+    train_sst = pd.read_csv(SST_INDO_FILE)
+    train_sst['date'] = pd.to_datetime(train_sst['date'])
+    train_sst['month'] = train_sst['date'].dt.month
+    
+    climatology = train_sst.groupby('month')['sst_actual'].mean()
+    
+    # Apply to 2013
+    test_2013 = test_2013.copy()
+    test_2013['month'] = test_2013.index.month
+    test_2013['climatology'] = test_2013['month'].map(climatology)
+    test_2013['sst_anomaly'] = test_2013['sst_actual'] - test_2013['climatology']
+    
+    print(f"  2013 SST Anomaly range: {test_2013['sst_anomaly'].min():.2f}°C to {test_2013['sst_anomaly'].max():.2f}°C")
+    
+    return test_2013[['sst_anomaly', 'nino34']]
 
 
 # ============================================================================
-# MODEL
+# MODEL & TRAINING (same as before)
 # ============================================================================
 
 class MultivariateLSTM(nn.Module):
-    """Multivariate LSTM for time series forecasting."""
-    
     def __init__(self, input_size=2, hidden_size=32, num_layers=1, output_size=1):
         super(MultivariateLSTM, self).__init__()
         self.hidden_size = hidden_size
         self.num_layers = num_layers
-        
-        self.lstm = nn.LSTM(
-            input_size=input_size,
-            hidden_size=hidden_size,
-            num_layers=num_layers,
-            batch_first=True
-        )
+        self.lstm = nn.LSTM(input_size=input_size, hidden_size=hidden_size,
+                           num_layers=num_layers, batch_first=True)
         self.fc = nn.Linear(hidden_size, output_size)
     
     def forward(self, x):
@@ -177,22 +183,23 @@ class MultivariateLSTM(nn.Module):
         return self.fc(lstm_out[:, -1, :])
 
 
-# ============================================================================
-# TRAINING
-# ============================================================================
+def create_sequences(data: np.ndarray, lookback: int):
+    X, y = [], []
+    for i in range(lookback, len(data)):
+        X.append(data[i-lookback:i, :])
+        y.append(data[i, 0])
+    return np.array(X), np.array(y).reshape(-1, 1)
+
 
 def train_model(model, train_loader, epochs, lr):
-    """Train the LSTM model."""
     criterion = nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=20, verbose=False
-    )
+        optimizer, mode='min', factor=0.5, patience=20, verbose=False)
     
     train_losses = []
-    
     print("\n" + "=" * 50)
-    print("TRAINING (2000-2011 Data)")
+    print("TRAINING (2000-2012 Data)")
     print("=" * 50)
     
     model.train()
@@ -201,12 +208,10 @@ def train_model(model, train_loader, epochs, lr):
         for X_batch, y_batch in train_loader:
             predictions = model(X_batch)
             loss = criterion(predictions, y_batch)
-            
             optimizer.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
-            
             epoch_loss += loss.item()
         
         avg_loss = epoch_loss / len(train_loader)
@@ -224,63 +229,44 @@ def train_model(model, train_loader, epochs, lr):
 # VISUALIZATION
 # ============================================================================
 
-def plot_2012_validation(actual, predicted, dates, rmse, train_losses):
-    """Create visualization for 2012 out-of-sample validation."""
-    
+def plot_2013_validation(actual, predicted, dates, rmse, train_losses):
     fig, axes = plt.subplots(2, 1, figsize=(12, 8), dpi=100)
     
-    # -------------------------------------------------------------------------
-    # Plot 1: 2012 Validation
-    # -------------------------------------------------------------------------
     ax1 = axes[0]
-    
-    # Format dates for plotting
     month_labels = [d.strftime('%b %Y') for d in dates]
     x_pos = range(len(dates))
     
     ax1.plot(x_pos, actual, 'b-', linewidth=2.5, marker='o', markersize=8,
-             label='Actual (Ground Truth)')
+             label='Actual 2013 (from NetCDF)')
     ax1.plot(x_pos, predicted, 'r--', linewidth=2.5, marker='s', markersize=8,
              label='LSTM Prediction')
     
-    # Zero reference
     ax1.axhline(y=0, color='gray', linestyle='-', linewidth=0.8, alpha=0.5)
-    
-    # Styling
     ax1.set_xticks(x_pos)
     ax1.set_xticklabels(month_labels, rotation=45, ha='right')
     ax1.set_ylabel('SST Anomaly (°C)', fontsize=12)
     ax1.set_xlabel('Month', fontsize=12)
-    ax1.set_title(f'Validation: Predicted vs Actual Indonesian SST Anomaly (Year 2012)\n'
-                  f'Out-of-Sample RMSE = {rmse:.4f}°C', 
-                  fontsize=14, fontweight='bold')
+    ax1.set_title(f'Out-of-Sample Validation: Predicted vs Actual Indonesian SST (Year 2013)\n'
+                  f'RMSE = {rmse:.4f}°C', fontsize=14, fontweight='bold')
     ax1.legend(loc='upper right', fontsize=11)
     ax1.grid(True, alpha=0.3)
     
-    # -------------------------------------------------------------------------
-    # Plot 2: Training Loss
-    # -------------------------------------------------------------------------
     ax2 = axes[1]
-    
-    epochs_range = range(1, len(train_losses) + 1)
-    ax2.plot(epochs_range, train_losses, 'g-', linewidth=2)
-    
+    ax2.plot(range(1, len(train_losses)+1), train_losses, 'g-', linewidth=2)
     min_loss = min(train_losses)
     min_epoch = train_losses.index(min_loss) + 1
     ax2.scatter([min_epoch], [min_loss], color='red', s=100, zorder=5,
                 label=f'Min Loss: {min_loss:.4f} (Epoch {min_epoch})')
-    
     ax2.set_xlabel('Epoch', fontsize=12)
     ax2.set_ylabel('MSE Loss', fontsize=12)
-    ax2.set_title('Training Loss Curve (2000-2011 Data)', fontsize=14, fontweight='bold')
+    ax2.set_title('Training Loss Curve (2000-2012 Data)', fontsize=14, fontweight='bold')
     ax2.legend(loc='upper right', fontsize=11)
     ax2.grid(True, alpha=0.3)
     
     plt.tight_layout()
-    plt.savefig('output/figures/validation_2012_results.png', dpi=150, bbox_inches='tight')
+    plt.savefig('output/figures/validation_2013_results.png', dpi=150, bbox_inches='tight')
     plt.close()
-    
-    print(f"\n✓ Saved: output/figures/validation_2012_results.png")
+    print(f"\n✓ Saved: output/figures/validation_2013_results.png")
 
 
 # ============================================================================
@@ -289,42 +275,51 @@ def plot_2012_validation(actual, predicted, dates, rmse, train_losses):
 
 def main():
     print("=" * 70)
-    print("OUT-OF-SAMPLE VALIDATION: Year 2012")
-    print("Training on 2000-2011, Testing on 2012")
+    print("TRUE OUT-OF-SAMPLE VALIDATION: Year 2013")
+    print("Training: 2000-2012 (processed CSV)")
+    print("Testing:  2013 (raw NetCDF - never seen by model)")
     print("=" * 70)
     
-    # Load data
-    print("\n[Step 1/5] Loading data...")
-    sst_df = load_indonesian_sst(SST_INDO_FILE)
-    nino_df = load_nino34_data(NINO34_FILE)
+    # Load training data (2000-2012)
+    print("\n[Step 1/6] Loading training data (2000-2012)...")
+    train_df, nino_df = load_training_data(SST_INDO_FILE, NINO34_FILE)
     
-    # Merge and split by year
-    print("\n[Step 2/5] Splitting data by year...")
-    train_df, test_df, full_df = merge_and_split_by_year(
-        sst_df, nino_df, TRAIN_END_YEAR, TEST_YEAR
-    )
+    # Load 2013 test data from raw NetCDF
+    print("\n[Step 2/6] Loading 2013 test data from raw NetCDF...")
+    test_2013_raw = load_2013_from_netcdf(SST_2013_NC, nino_df)
     
-    # Normalize using ONLY training data (prevent data leakage)
-    print("\n[Step 3/5] Normalizing (fit on training data only)...")
+    # Calculate anomaly for 2013 using training climatology
+    print("\n[Step 3/6] Calculating 2013 anomaly using training climatology...")
+    test_2013 = calculate_anomaly_for_2013(train_df, test_2013_raw)
+    
+    # Normalize using ONLY training data
+    print("\n[Step 4/6] Normalizing (fit on training data only)...")
     scaler = MinMaxScaler(feature_range=(-1, 1))
+    train_scaled = scaler.fit_transform(train_df.values)
+    test_scaled = scaler.transform(test_2013.values)
     
-    train_data = train_df.values
-    test_data = test_df.values
-    
-    # Fit scaler on training data only
-    scaler.fit(train_data)
-    
-    # Transform both train and test
-    train_scaled = scaler.transform(train_data)
-    test_scaled = scaler.transform(test_data)
-    
-    # Combine for sequence creation (we need lookback from training for test)
+    # Combine for sequence creation (need lookback from end of training)
     full_scaled = np.vstack([train_scaled, test_scaled])
     
     # Create sequences
-    X_train, y_train, X_test, y_test = create_sequences_for_validation(
-        full_scaled, len(train_scaled), len(test_scaled), LOOKBACK
-    )
+    X_train, y_train = create_sequences(train_scaled, LOOKBACK)
+    
+    # For test: use last 12 months of training + test data
+    X_test, y_test = [], []
+    for i in range(len(test_scaled)):
+        if i < LOOKBACK:
+            # Use end of training data for lookback
+            lookback_data = np.vstack([
+                train_scaled[-(LOOKBACK-i):],
+                test_scaled[:i]
+            ]) if i > 0 else train_scaled[-LOOKBACK:]
+        else:
+            lookback_data = test_scaled[i-LOOKBACK:i]
+        X_test.append(lookback_data)
+        y_test.append(test_scaled[i, 0])
+    
+    X_test = np.array(X_test)
+    y_test = np.array(y_test).reshape(-1, 1)
     
     print(f"  Train sequences: {X_train.shape}")
     print(f"  Test sequences: {X_test.shape}")
@@ -339,25 +334,16 @@ def main():
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
     
     # Build and train model
-    print("\n[Step 4/5] Training model...")
-    model = MultivariateLSTM(
-        input_size=INPUT_SIZE,
-        hidden_size=HIDDEN_SIZE,
-        num_layers=NUM_LAYERS,
-        output_size=OUTPUT_SIZE
-    ).to(DEVICE)
-    
+    print("\n[Step 5/6] Training model...")
+    model = MultivariateLSTM(INPUT_SIZE, HIDDEN_SIZE, NUM_LAYERS, OUTPUT_SIZE).to(DEVICE)
     print(f"  Model: MultivariateLSTM(input={INPUT_SIZE}, hidden={HIDDEN_SIZE})")
-    
     train_losses = train_model(model, train_loader, EPOCHS, LEARNING_RATE)
     
-    # Evaluate on 2012
-    print("\n[Step 5/5] Evaluating on Year 2012...")
+    # Evaluate on 2013
+    print("\n[Step 6/6] Evaluating on Year 2013...")
     model.eval()
     with torch.no_grad():
         pred_scaled = model(X_test_t).cpu().numpy()
-    
-    actual_scaled = y_test_t.cpu().numpy()
     
     # Inverse transform
     n_features = scaler.n_features_in_
@@ -365,25 +351,24 @@ def main():
     pred_full[:, 0] = pred_scaled.flatten()
     pred_original = scaler.inverse_transform(pred_full)[:, 0]
     
-    actual_full = np.zeros((len(actual_scaled), n_features))
-    actual_full[:, 0] = actual_scaled.flatten()
+    actual_full = np.zeros((len(y_test), n_features))
+    actual_full[:, 0] = y_test.flatten()
     actual_original = scaler.inverse_transform(actual_full)[:, 0]
     
-    # Calculate RMSE
+    # Metrics
     rmse = np.sqrt(np.mean((pred_original - actual_original) ** 2))
     mae = np.mean(np.abs(pred_original - actual_original))
     corr = np.corrcoef(actual_original, pred_original)[0, 1]
     
     print("\n" + "=" * 50)
-    print("2012 OUT-OF-SAMPLE METRICS")
+    print("2013 OUT-OF-SAMPLE METRICS")
     print("=" * 50)
     print(f"RMSE:        {rmse:.4f} °C")
     print(f"MAE:         {mae:.4f} °C")
     print(f"Correlation: {corr:.4f}")
     
     # Plot
-    test_dates = test_df.index
-    plot_2012_validation(actual_original, pred_original, test_dates, rmse, train_losses)
+    plot_2013_validation(actual_original, pred_original, test_2013.index, rmse, train_losses)
     
     print("\n" + "=" * 70)
     print("VALIDATION COMPLETE")
