@@ -105,7 +105,7 @@ python download_data.py
 python preprocessing.py
 
 # 5. Train & evaluate
-python validation_2013.py          # Recommended: Out-of-sample validation
+python validation_2024.py          # Recommended: Out-of-sample validation
 python multivariate_modeling.py    # Alternative: 80/20 split
 ```
 
