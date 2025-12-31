@@ -1,11 +1,11 @@
-# Indonesian SST Anomaly Prediction with LSTM
+# Indonesian SST Prediction with LSTM
 
 ![Python](https://img.shields.io/badge/Python-3.8%2B-blue)
 ![PyTorch](https://img.shields.io/badge/Deep%20Learning-PyTorch-red)
 ![Oceanography](https://img.shields.io/badge/Domain-Oceanography-teal)
 
 ## Project Overview
-Proyek ini memprediksi **Anomali Suhu Permukaan Laut (SST)** di perairan Indonesia menggunakan **Multivariate LSTM dengan Recursive Forecasting**. Model memanfaatkan **Niño 3.4 Index** sebagai prediktor dinamis untuk menangkap fenomena **El Niño-Southern Oscillation (ENSO)**.
+Proyek ini memprediksi **Suhu Permukaan Laut (SST)** di perairan Indonesia menggunakan **Multivariate LSTM dengan Recursive Forecasting**. Model memanfaatkan **Niño 3.4 Index** sebagai prediktor dinamis untuk menangkap fenomena **El Niño-Southern Oscillation (ENSO)**.
 
 ---
 
@@ -20,43 +20,40 @@ enso-forecasting/
 │       └── sst_indo_clean.csv
 ├── data_sst/                   # Raw NetCDF files (gitignored)
 ├── output/
-│   ├── figures/                # Generated plots and visualizations
-│   │   ├── validation_2025_improved.png
-│   │   ├── forecast_2025_official.png
-│   │   └── sst_anomaly_trend.png
+│   ├── figures/                # Generated plots
 │   ├── models/                 # Saved model checkpoints
-│   │   ├── best_model_2025_recursive_v2.pt
-│   │   └── production_model_2025.pt
-│   └── tables/                 # Forecast results
-│       └── forecast_2025.csv
-├── docs/                       # Documentation
-│   └── TECHNICAL_DOCUMENTATION.md
+│   └── tables/                 # Forecast results (CSV)
 ├── download_data.py            # Download NetCDF from NOAA
 ├── preprocessing.py            # ETL: NetCDF → CSV
-├── validation_2025.py          # Validation: Compare forecast vs actual 2025
-└── forecast.py                 # Production: Blind 2025 forecast (no ground truth)
+│
+├── validation_2025_anomaly_sst.py    # Validation: SST Anomaly
+├── validation_2025_absolute_sst.py   # Validation: Absolute SST (°C)
+├── forecast_anomaly_sst.py           # Production: SST Anomaly 
+└── forecast_absolute_sst.py          # Production: Absolute SST (°C)
 ```
 
 ---
 
-## Scripts
+## Scripts Overview
 
-| Script | Purpose | Data Used |
-|--------|---------|-----------|
-| `validation_2025.py` | Validasi akurasi model dengan ground truth 2025 | Train: 2000-2024, Test: 2025 (actual) |
-| `forecast.py` | **Production forecasting** - simulasi prediksi nyata | Train: 2000-2024, Generate: 2025 (blind) |
+### Dua Mode Prediksi:
 
-### `forecast.py` - Production Forecasting
-Script ini mensimulasikan skenario **real-world forecasting**:
-- Berdiri di **Desember 2024**
-- Memprediksi **seluruh tahun 2025** tanpa data aktual
-- Output: CSV file dengan prediksi bulanan + visualisasi
+| Mode | Target | Contoh Output |
+|------|--------|---------------|
+| **Anomaly** | Penyimpangan dari rata-rata | +0.5°C, -0.3°C |
+| **Absolute** | Suhu aktual | 29.5°C, 28.8°C |
 
-```bash
-python forecast.py
-# Output: output/tables/forecast_2025.csv
-#         output/figures/forecast_2025_official.png
-```
+### Script Pairs:
+
+| Script | Purpose |
+|--------|---------|
+| `validation_2025_anomaly_sst.py` | Validasi prediksi anomaly vs ground truth 2025 |
+| `validation_2025_absolute_sst.py` | Validasi prediksi absolute vs ground truth 2025 |
+| `forecast_anomaly_sst.py` | Production: Blind forecast anomaly 2025 |
+| `forecast_absolute_sst.py` | Production: Blind forecast absolute SST 2025 |
+
+> **Validation** = Membandingkan prediksi dengan data aktual (mengukur akurasi)
+> **Forecast** = Prediksi "buta" tanpa ground truth (simulasi dunia nyata)
 
 ---
 
@@ -75,40 +72,51 @@ Folder `data_sst/` berisi file NetCDF mentah dari NOAA (~500MB per file) yang **
 
 ---
 
-## Model Architecture (v2 - Enhanced)
+## Model Architecture
 
-| Parameter | v1 (Old) | v2 (Current) |
-|-----------|----------|--------------|
-| **Lookback Window** | 12 months | 48 months (4 tahun konteks ENSO) |
-| **Input Features** | 2 (SST, Niño) | 4 (SST, Niño, Sin Month, Cos Month) |
-| **Output** | 1 (SST only) | 2 (SST + Niño dinamis) |
-| **Hidden Size** | 32 | 128 |
-| **Layers** | 1 | 2 |
-| **Loss Function** | MSE | Huber Loss |
-| **LR Scheduler** | None | ReduceLROnPlateau |
+| Parameter | Value |
+|-----------|-------|
+| **Lookback Window** | 48 months (4 tahun konteks ENSO) |
+| **Input Features** | 4 (SST, Niño, Sin Month, Cos Month) |
+| **Output** | 2 (SST + Niño dinamis) |
+| **Hidden Size** | 128 |
+| **Layers** | 2 |
+| **Loss Function** | Huber Loss |
+| **LR Scheduler** | ReduceLROnPlateau |
 
-### Key Improvements:
-1. **Extended Lookback (48 bulan)** - Menangkap siklus ENSO penuh (2-7 tahun)
+### Key Features:
+1. **Extended Lookback (48 bulan)** - Menangkap siklus ENSO penuh
 2. **Cyclic Time Features (Sin/Cos)** - Menangkap pola musiman
 3. **Multivariate Output** - Memprediksi SST + Niño secara bersamaan
-4. **HuberLoss** - Mencegah "mean reversion" yang menyebabkan prediksi flat
-5. **LR Scheduler** - Konvergensi lebih tajam
+4. **Recursive Forecasting** - Prediksi iteratif menggunakan output sebelumnya
 
 ---
 
 ## Results
 
 ### Production Forecast (Blind 2025)
-![Production Forecast](output/figures/forecast_2025_official.png)
+
+#### SST Anomaly
+![Anomaly Forecast](output/figures/forecast_2025_official.png)
+
+#### Absolute SST
+![Absolute Forecast](output/figures/forecast_2025_absolute_official.png)
+
+---
 
 ### Validation (vs Actual 2025 Data)
-![Validation Results](output/figures/validation_2025_improved.png)
 
-| Metric | v1 (Old) | v2 (Current) | Improvement |
-|--------|----------|--------------|-------------|
-| **RMSE** | 0.27°C | 0.1060°C | **↓ 60%** |
-| **MAE** | ~0.20°C | 0.0843°C | **↓ 58%** |
-| **Correlation** | ~0.3 | 0.6377 | **↑ 2x** |
+#### SST Anomaly Validation
+![Anomaly Validation](output/figures/validation_2025_improved.png)
+
+| Metric | Value |
+|--------|-------|
+| **RMSE** | 0.1060°C |
+| **MAE** | 0.0843°C |
+| **Correlation** | 0.6377 |
+
+#### Absolute SST Validation
+![Absolute Validation](output/figures/validation_2025_absolute.png)
 
 ---
 
@@ -125,14 +133,16 @@ pip install -r requirements.txt
 # 3. Download Data
 python download_data.py
 
-# 4. Run preprocessing (if starting fresh)
+# 4. Run preprocessing
 python preprocessing.py
 
-# 5. Validate model accuracy
-python validation_2025.py
+# 5. Validation (bandingkan dengan ground truth 2025)
+python validation_2025_anomaly_sst.py     # Anomaly mode
+python validation_2025_absolute_sst.py    # Absolute mode
 
-# 6. Generate production forecast
-python forecast.py
+# 6. Production Forecast (blind prediction)
+python forecast_anomaly_sst.py            # Anomaly mode
+python forecast_absolute_sst.py           # Absolute mode
 ```
 
 ---
