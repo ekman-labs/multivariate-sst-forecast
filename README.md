@@ -118,8 +118,8 @@ Folder `data_sst/` berisi file NetCDF mentah dari NOAA (~500MB per file) yang **
 
 ```bash
 # 1. Clone repository
-git clone https://github.com/lainx86/enso-forecasting.git
-cd enso-forecasting
+git clone https://github.com/lainx86/multivariate-sst-forecast.git
+cd multivariate-sst-forecast
 
 # 2. Install dependencies
 pip install -r requirements.txt
